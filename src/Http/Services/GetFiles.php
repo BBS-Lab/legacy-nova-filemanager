@@ -3,9 +3,10 @@
 namespace Infinety\Filemanager\Http\Services;
 
 use Carbon\Carbon;
-use Dreamonkey\CloudFrontUrlSigner\Facades\CloudFrontUrlSigner;
 use GuzzleHttp\Client;
 use Illuminate\Support\Str;
+use League\Flysystem\FileAttributes;
+use League\Flysystem\StorageAttributes;
 
 trait GetFiles
 {
@@ -27,7 +28,7 @@ trait GetFiles
      */
     public function getFiles($folder, $order, $filter = false)
     {
-        $filesData = $this->storage->listContents($folder);
+        $filesData = $this->listContents($folder);
         $filesData = $this->normalizeFiles($filesData);
         $files = [];
 
@@ -55,12 +56,51 @@ trait GetFiles
         return $this->orderData($files, $order, config('filemanager.direction', 'asc'));
     }
 
-    public function getAssetUrl(string $basename)
+    protected function listContents(string $folder)
     {
-        if (config('filemanager.sign_cloudfront_urls')) {
-            return CloudFrontUrlSigner::sign($this->storage->url($basename));
+        return $this->storage->listContents($folder)->map(fn(StorageAttributes $attributes) => [
+            'type' => $attributes->type(),
+            'basename' => basename($attributes->path()),
+            'path' => $attributes->path(),
+            'size' => $attributes instanceof FileAttributes ? $attributes->fileSize() : 0,
+            'visibility' => $attributes->visibility(),
+            'lastModified' => $attributes->lastModified(),
+            'mimeType' => $attributes instanceof FileAttributes ? $this->storage->mimeType($attributes->path()) : null,
+        ])->toArray();
+    }
+
+    /**
+     * @param $files
+     */
+    public function normalizeFiles($files)
+    {
+        foreach ($files as $key => $file) {
+            if (! isset($file['extension'])) {
+                $files[$key]['extension'] = null;
+            }
+            if (! isset($file['size'])) {
+                // $size = $this->storage->getSize($file['path']);
+                $files[$key]['size'] = null;
+            }
         }
-        return $this->storage->url($basename);
+
+        return $files;
+    }
+
+    /**
+     * Generates an id based on file.
+     *
+     * @param array $file
+     *
+     * @return  string
+     */
+    public function generateId($file)
+    {
+        if (isset($file['timestamp'])) {
+            return md5($this->disk . '_' . trim($file['basename']) . $file['timestamp']);
+        }
+
+        return md5($this->disk . '_' . trim($file['basename']));
     }
 
     /**
@@ -69,7 +109,7 @@ trait GetFiles
      */
     public function getFileData($file, $id)
     {
-        if (!$this->isDot($file) && !$this->exceptExtensions->contains($file['extension']) && !$this->exceptFolders->contains($file['basename']) && !$this->exceptFiles->contains($file['basename']) && $this->accept($file)) {
+        if (! $this->isDot($file) && ! $this->exceptExtensions->contains($file['extension']) && ! $this->exceptFolders->contains($file['basename']) && ! $this->exceptFiles->contains($file['basename']) && $this->accept($file)) {
             $fileInfo = [
                 'id' => $id,
                 'name' => trim($file['basename']),
@@ -80,7 +120,7 @@ trait GetFiles
                 'size' => ($file['size'] != 0) ? $file['size'] : 0,
                 'size_human' => ($file['size'] != 0) ? $this->formatBytes($file['size'], 0) : 0,
                 'thumb' => $this->getThumbFile($file),
-                'asset' => $this->cleanSlashes($this->getAssetUrl($file['basename'])),
+                'asset' => $this->cleanSlashes($this->storage->url($file['basename'])),
                 'can' => true,
                 'loading' => false,
             ];
@@ -92,19 +132,211 @@ trait GetFiles
 
             if ($fileInfo['mime'] == 'image') {
                 [$width, $height] = $this->getImageDimesions($file);
-                if (!$width == false) {
+                if (! $width == false) {
                     $fileInfo['dimensions'] = $width . 'x' . $height;
                 }
             }
 
             if ($fileInfo['type'] == 'dir') {
-                if (!$this->checkShouldHideFolder($fileInfo['path'])) {
+                if (! $this->checkShouldHideFolder($fileInfo['path'])) {
                     return false;
                 }
             }
 
             return (object)$fileInfo;
         }
+    }
+
+    /**
+     * Check if file is Dot.
+     *
+     * @param string $file
+     *
+     * @return  bool
+     */
+    public function isDot($file)
+    {
+        if (Str::startsWith($file['basename'], '.')) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * @param $file
+     *
+     * @return bool
+     */
+    public function accept($file)
+    {
+        return '.' !== substr($file['basename'], 0, 1);
+    }
+
+    /**
+     * @param $file
+     *
+     * @return bool|string
+     */
+    public function getFileType($file)
+    {
+        if ($file['type'] == 'dir') {
+            return 'dir';
+        }
+
+        $mime = $file['mimeType'];
+        $extension = $file['extension'];
+
+        if (Str::contains($mime, 'directory')) {
+            return 'dir';
+        }
+
+        if (Str::contains($mime, 'image') || $extension == 'svg') {
+            return 'image';
+        }
+
+        if (Str::contains($mime, 'pdf')) {
+            return 'pdf';
+        }
+
+        if (Str::contains($mime, 'audio')) {
+            return 'audio';
+        }
+
+        if (Str::contains($mime, 'video')) {
+            return 'video';
+        }
+
+        if (Str::contains($mime, 'zip')) {
+            return 'file';
+        }
+
+        if (Str::contains($mime, 'rar')) {
+            return 'file';
+        }
+
+        if (Str::contains($mime, 'octet-stream')) {
+            return 'file';
+        }
+
+        if (Str::contains($mime, 'excel')) {
+            return 'text';
+        }
+
+        if (Str::contains($mime, 'word')) {
+            return 'text';
+        }
+
+        if (Str::contains($mime, 'css')) {
+            return 'text';
+        }
+
+        if (Str::contains($mime, 'javascript')) {
+            return 'text';
+        }
+
+        if (Str::contains($mime, 'plain')) {
+            return 'text';
+        }
+
+        if (Str::contains($mime, 'rtf')) {
+            return 'text';
+        }
+
+        if (Str::contains($mime, 'text')) {
+            return 'text';
+        }
+
+        return false;
+    }
+
+    /**
+     * @param $file
+     * @return mixed
+     */
+    public function getThumbFile($file)
+    {
+        return $this->cleanSlashes($this->getThumb($file, $this->currentPath));
+    }
+
+    /**
+     * Return the Type of file.
+     *
+     * @param $file
+     *
+     * @return bool|string
+     */
+    public function getThumb($file, $folder = false)
+    {
+        if ($file['type'] == 'dir') {
+            return false;
+        }
+
+        $mime = $file['mimeType'];
+        $extension = $file['extension'];
+
+        if (Str::contains($mime, 'directory')) {
+            return false;
+        }
+
+        if (Str::contains($mime, 'image') || $extension == 'svg') {
+            if (method_exists($this->storage, 'put')) {
+                return $this->storage->url($file['path']);
+            }
+
+            return $folder . '/' . $file['basename'];
+        }
+
+        $fileType = new FileTypesImages();
+
+        return $fileType->getImage($mime);
+    }
+
+    /**
+     * @param $timestamp
+     */
+    public function modificationDate($time)
+    {
+        try {
+            return Carbon::createFromTimestamp($time)->format('Y-m-d H:i:s');
+        } catch (\Exception $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Get image dimensions for files.
+     *
+     * @param $file
+     */
+    public function getImageDimesions($file)
+    {
+        if ($this->disk == 'public') {
+            return @getimagesize($this->storage->path($file['path']));
+        }
+
+        if (in_array(config('filemanager.disk'), $this->cloudDisks)) {
+            return false;
+        }
+
+        return false;
+    }
+
+    /**
+     * Hide folders with .hide file.
+     * @param $oath
+     */
+    private function checkShouldHideFolder($path)
+    {
+        $filesData = $this->listContents($path);
+
+        $key = array_search('.hide', array_column($filesData, 'basename'));
+
+        if ($key === false) {
+            return true;
+        }
+
+        return false;
     }
 
     /**
@@ -182,29 +414,13 @@ trait GetFiles
     }
 
     /**
-     * Generates an id based on file.
-     *
-     * @param array $file
-     *
-     * @return  string
-     */
-    public function generateId($file)
-    {
-        if (isset($file['timestamp'])) {
-            return md5($this->disk . '_' . trim($file['basename']) . $file['timestamp']);
-        }
-
-        return md5($this->disk . '_' . trim($file['basename']));
-    }
-
-    /**
      * Set Relative Path.
      *
      * @param $folder
      */
     public function setRelativePath($folder)
     {
-        $defaultPath = $this->storage->getDriver()->getAdapter()->getPathPrefix();
+        $defaultPath = $this->storage->path('');
 
         $publicPath = str_replace($defaultPath, '', $folder);
 
@@ -230,134 +446,6 @@ trait GetFiles
     }
 
     /**
-     * @param $file
-     *
-     * @return bool|string
-     */
-    public function getFileType($file)
-    {
-        if ($file['type'] == 'dir') {
-            return 'dir';
-        }
-
-        $mime = $this->storage->getMimetype($file['path']);
-        $extension = $file['extension'];
-
-        if (Str::contains($mime, 'directory')) {
-            return 'dir';
-        }
-
-        if (Str::contains($mime, 'image') || $extension == 'svg') {
-            return 'image';
-        }
-
-        if (Str::contains($mime, 'pdf')) {
-            return 'pdf';
-        }
-
-        if (Str::contains($mime, 'audio')) {
-            return 'audio';
-        }
-
-        if (Str::contains($mime, 'video')) {
-            return 'video';
-        }
-
-        if (Str::contains($mime, 'zip')) {
-            return 'file';
-        }
-
-        if (Str::contains($mime, 'rar')) {
-            return 'file';
-        }
-
-        if (Str::contains($mime, 'octet-stream')) {
-            return 'file';
-        }
-
-        if (Str::contains($mime, 'excel')) {
-            return 'text';
-        }
-
-        if (Str::contains($mime, 'word')) {
-            return 'text';
-        }
-
-        if (Str::contains($mime, 'css')) {
-            return 'text';
-        }
-
-        if (Str::contains($mime, 'javascript')) {
-            return 'text';
-        }
-
-        if (Str::contains($mime, 'plain')) {
-            return 'text';
-        }
-
-        if (Str::contains($mime, 'rtf')) {
-            return 'text';
-        }
-
-        if (Str::contains($mime, 'text')) {
-            return 'text';
-        }
-
-        return false;
-    }
-
-    /**
-     * Return the Type of file.
-     *
-     * @param $file
-     *
-     * @return bool|string
-     */
-    public function getThumb($file, $folder = false)
-    {
-        if ($file['type'] == 'dir') {
-            return false;
-        }
-
-        $mime = $this->storage->getMimetype($file['path']);
-        $extension = $file['extension'];
-
-        if (Str::contains($mime, 'directory')) {
-            return false;
-        }
-
-        if (Str::contains($mime, 'image') || $extension == 'svg') {
-            if (method_exists($this->storage, 'put')) {
-                return $this->getAssetUrl($file['path']);
-            }
-
-            return $folder . '/' . $file['basename'];
-        }
-
-        $fileType = new FileTypesImages();
-
-        return $fileType->getImage($mime);
-    }
-
-    /**
-     * Get image dimensions for files.
-     *
-     * @param $file
-     */
-    public function getImageDimesions($file)
-    {
-        if ($this->disk == 'public') {
-            return @getimagesize($this->storage->path($file['path']));
-        }
-
-        if (in_array(config('filemanager.disk'), $this->cloudDisks)) {
-            return false;
-        }
-
-        return false;
-    }
-
-    /**
      * Get image dimensions from cloud.
      *
      * @param $file
@@ -375,59 +463,6 @@ trait GetFiles
             return $dims;
         } catch (\Exception $e) {
             return false;
-        }
-
-        return false;
-    }
-
-    /**
-     * @param $file
-     * @return mixed
-     */
-    public function getThumbFile($file)
-    {
-        return $this->cleanSlashes($this->getThumb($file, $this->currentPath));
-    }
-
-    /**
-     * @param $files
-     */
-    public function normalizeFiles($files)
-    {
-        foreach ($files as $key => $file) {
-            if (!isset($file['extension'])) {
-                $files[$key]['extension'] = null;
-            }
-            if (!isset($file['size'])) {
-                // $size = $this->storage->getSize($file['path']);
-                $files[$key]['size'] = null;
-            }
-        }
-
-        return $files;
-    }
-
-    /**
-     * @param $file
-     *
-     * @return bool
-     */
-    public function accept($file)
-    {
-        return '.' !== substr($file['basename'], 0, 1);
-    }
-
-    /**
-     * Check if file is Dot.
-     *
-     * @param string $file
-     *
-     * @return  bool
-     */
-    public function isDot($file)
-    {
-        if (Str::startsWith($file['basename'], '.')) {
-            return true;
         }
 
         return false;
@@ -472,7 +507,7 @@ trait GetFiles
      */
     public function getPaths($currentFolder)
     {
-        $defaultPath = $this->cleanSlashes($this->storage->getDriver()->getAdapter()->getPathPrefix());
+        $defaultPath = $this->cleanSlashes($this->storage->path(''));
         $currentPath = $this->cleanSlashes($this->storage->path($currentFolder));
 
         $paths = $currentPath;
@@ -498,34 +533,5 @@ trait GetFiles
     public function recursivePaths($name, $pathCollection)
     {
         return Str::before($pathCollection->implode('/'), $name) . $name;
-    }
-
-    /**
-     * @param $timestamp
-     */
-    public function modificationDate($time)
-    {
-        try {
-            return Carbon::createFromTimestamp($time)->format('Y-m-d H:i:s');
-        } catch (\Exception $e) {
-            return false;
-        }
-    }
-
-    /**
-     * Hide folders with .hide file.
-     * @param $oath
-     */
-    private function checkShouldHideFolder($path)
-    {
-        $filesData = $this->storage->listContents($path);
-
-        $key = array_search('.hide', array_column($filesData, 'basename'));
-
-        if ($key === false) {
-            return true;
-        }
-
-        return false;
     }
 }

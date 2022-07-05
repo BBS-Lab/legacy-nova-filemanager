@@ -3,7 +3,6 @@
 namespace Infinety\Filemanager\Http\Services;
 
 use Carbon\Carbon;
-use Dreamonkey\CloudFrontUrlSigner\Facades\CloudFrontUrlSigner;
 use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
@@ -41,14 +40,6 @@ class NormalizeFile
         $this->storagePath = $storagePath;
     }
 
-    public function getAssetUrl(string $basename)
-    {
-        if (config('filemanager.sign_cloudfront_urls')) {
-            return CloudFrontUrlSigner::sign($this->storage->url($basename));
-        }
-        return $this->storage->url($basename);
-    }
-
     /**
      * @return mixed
      */
@@ -59,7 +50,7 @@ class NormalizeFile
             'mime' => $this->getCorrectMimeFileType(),
             'path' => $this->storagePath,
             'size' => $this->getFileSize(),
-            'url'  => $this->cleanSlashes($this->getAssetUrl($this->storagePath)),
+            'url'  => $this->cleanSlashes($this->storage->url($this->storagePath)),
             'date' => $this->modificationDate(),
             'ext'  => $this->file->getExtension(),
         ]);
@@ -75,18 +66,18 @@ class NormalizeFile
      */
     private function setExtras(Collection $data)
     {
-        $mime = $this->storage->getMimetype($this->storagePath);
+        $mime = $this->storage->mimeType($this->storagePath);
 
         // Image
         if (Str::contains($mime, 'image') || $data['ext'] == 'svg') {
             $data->put('type', 'image');
-            $data->put('dimensions', $this->getDimensions($this->storage->getMimetype($this->storagePath)));
+            $data->put('dimensions', $this->getDimensions($this->storage->mimeType($this->storagePath)));
         }
 
         // Video
         if (Str::contains($mime, 'audio')) {
             $data->put('type', 'audio');
-            $src = str_replace(env('APP_URL'), '', $this->getAssetUrl($this->storagePath));
+            $src = str_replace(env('APP_URL'), '', $this->storage->url($this->storagePath));
             $data->put('src', $src);
         }
 
@@ -154,7 +145,7 @@ class NormalizeFile
     private function getImage($mime, $extension = false)
     {
         if (Str::contains($mime, 'image') || $extension == 'svg') {
-            return $this->getAssetUrl($this->storagePath);
+            return $this->storage->url($this->storagePath);
         }
 
         $fileType = new FileTypesImages();
@@ -208,7 +199,7 @@ class NormalizeFile
 
         //If no type
 
-        return $this->storage->getMimetype($this->storagePath);
+        return $this->storage->mimeType($this->storagePath);
     }
 
     private function availablesTextExtensions()
